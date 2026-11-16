@@ -1,0 +1,46 @@
+include(CTest)
+
+find_path(SYSTEMC_INCLUDE_DIR
+    NAMES systemc.h
+    HINTS "$ENV{SYSTEMC_HOME}"
+    PATH_SUFFIXES include
+)
+find_library(SYSTEMC_LIBRARY
+    NAMES systemc
+    HINTS "$ENV{SYSTEMC_HOME}"
+    PATH_SUFFIXES lib lib64 lib-macos
+)
+find_path(CONNECTIONS_INCLUDE_DIR
+    NAMES connections/connections.h
+    HINTS "$ENV{CONNECTIONS_HOME}" "$ENV{MATCHLIB_HOME}"
+    PATH_SUFFIXES include
+)
+find_path(AC_TYPES_INCLUDE_DIR
+    NAMES ac_int.h
+    HINTS "$ENV{AC_TYPES_HOME}" "$ENV{CATAPULT_HOME}" "$ENV{MATCHLIB_HOME}"
+    PATH_SUFFIXES include
+)
+
+if(NOT SYSTEMC_INCLUDE_DIR OR NOT SYSTEMC_LIBRARY OR
+   NOT CONNECTIONS_INCLUDE_DIR OR NOT AC_TYPES_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "SystemC, MatchLib Connections, or AC Types was not found. "
+        "Set SYSTEMC_HOME, CONNECTIONS_HOME, and AC_TYPES_HOME (or "
+        "CATAPULT_HOME/MATCHLIB_HOME), or pass the corresponding "
+        "CMake *_INCLUDE_DIR and SYSTEMC_LIBRARY cache variables."
+    )
+endif()
+
+add_executable(jbfifo_testbench jbfifo_testbench.cpp)
+target_compile_features(jbfifo_testbench PRIVATE cxx_std_14)
+target_include_directories(jbfifo_testbench PRIVATE
+    "${SYSTEMC_INCLUDE_DIR}"
+    "${CONNECTIONS_INCLUDE_DIR}"
+    "${AC_TYPES_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_LIST_DIR}/../src"
+)
+target_link_libraries(jbfifo_testbench PRIVATE "${SYSTEMC_LIBRARY}")
+
+if(BUILD_TESTING)
+    add_test(NAME jbfifo_testbench COMMAND jbfifo_testbench)
+endif()
