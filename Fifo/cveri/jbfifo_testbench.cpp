@@ -279,104 +279,6 @@ private:
     FifoInterface* vif = nullptr;
 };
 
-class FifoScoreboard : public uvm_scoreboard, public tlm::tlm_analysis_if<FifoEvent> {
-public:
-    uvm_analysis_export<FifoEvent> transfers{"transfers"};
-    unsigned expected_count = 0;
-    bool expect_saturation = false;
-
-    explicit FifoScoreboard(uvm_component_name name) : uvm_scoreboard(name) {
-        transfers.bind(*this);
-    }
-    UVM_COMPONENT_UTILS(FifoScoreboard);
-
-    void write(const FifoEvent& event) override {
-        if (event.kind == FifoEventKind::status) {
-            if (event.empty && event.full) {
-                UVM_ERROR("FIFO_STATUS", "o_empty and o_full are both asserted");
-            }
-            return;
-        }
-        if (event.kind == FifoEventKind::drain_complete) {
-            if (!expected.empty() || !event.empty || event.full) {
-                UVM_ERROR("FIFO_STATUS", "After drain, expected no pending words, o_empty=1 and o_full=0");
-            }
-            return;
-        }
-        if (event.kind == FifoEventKind::input_blocked) {
-            if (expected.size() != kCapacity) {
-                UVM_ERROR("FIFO_FULL", "Input blocked with " + std::to_string(expected.size()) +
-                          " outstanding words, expected " + std::to_string(kCapacity));
-            }
-            if (event.empty || !event.full) {
-                UVM_ERROR("FIFO_STATUS", "At saturation, expected o_empty=0 and o_full=1");
-            }
-            ++blocked;
-            pending = event.data;
-            outputs_at_block = outputs;
-            return;
-        }
-        if (event.kind == FifoEventKind::input) {
-            if (blocked != resumed) {
-                if (outputs == outputs_at_block || event.data != pending) {
-                    UVM_ERROR("FIFO_RESUME", "Expected the blocked word to be accepted after an output");
-                } else {
-                    ++resumed;
-                }
-            }
-            expected.push_back(event.data);
-            ++inputs;
-            if (expected.size() > kCapacity) {
-                UVM_ERROR("FIFO_OVERFLOW", "Accepted more than " + std::to_string(kCapacity) +
-                          " outstanding words");
-            }
-            return;
-        }
-
-        ++outputs;
-        if (expected.empty()) {
-            UVM_ERROR("UNEXPECTED_OUTPUT", "Received data with no pending input");
-            return;
-        }
-        if (event.data != expected.front()) {
-            UVM_ERROR("FIFO_ORDER", "Output #" + std::to_string(outputs) +
-                      " expected " + std::to_string(expected.front().to_uint()) +
-                      ", got " + std::to_string(event.data.to_uint()));
-        }
-        expected.pop_front();
-    }
-
-    void check_phase(uvm_phase&) override {
-        const std::string counts = "Expected " + std::to_string(expected_count) +
-            " transfers each way, observed " + std::to_string(inputs) +
-            " inputs and " + std::to_string(outputs) + " outputs";
-        if (inputs != expected_count || outputs != expected_count || !expected.empty()) {
-            UVM_ERROR("FIFO_COUNT", counts + ", pending " + std::to_string(expected.size()));
-        } else {
-            UVM_INFO("FIFO_COUNT", counts, UVM_LOW);
-        }
-        if (expect_saturation) {
-            if (blocked != 1 || resumed != 1) {
-                UVM_ERROR("FIFO_FULL", "Expected one saturation and recovery, observed " +
-                          std::to_string(blocked) + " blocked and " + std::to_string(resumed) + " resumed");
-            } else {
-                UVM_INFO("FIFO_FULL", "Input blocked at " + std::to_string(kCapacity) +
-                         " outstanding words for " + kQuietWindow.to_string() +
-                         " and was accepted after an output", UVM_LOW);
-            }
-        }
-    }
-
-private:
-    std::deque<Data> expected;
-    unsigned inputs = 0;
-    unsigned outputs = 0;
-    unsigned blocked = 0;
-    unsigned resumed = 0;
-    unsigned outputs_at_block = 0;
-    Data pending = 0;
-};
-
 enum class CoverageBin {
     input, output, empty, partial, full, input_blocked, input_resumed,
     status_empty, status_partial, status_full
@@ -471,7 +373,7 @@ public:
 
         std::string path;
         if (uvm_config_db<std::string>::get(this, "", "ucis_path", path)) {
-            save_ucis(path, get_parent()->get_parent()->get_name());
+            save_ucis(path, get_parent()->get_parent()->get_parent()->get_name());
         }
     }
 
@@ -518,6 +420,116 @@ private:
     Data pending = 0;
 };
 
+class FifoScoreboard : public uvm_scoreboard, public tlm::tlm_analysis_if<FifoEvent> {
+public:
+    uvm_analysis_export<FifoEvent> transfers{"transfers"};
+    unsigned expected_count = 0;
+    bool expect_saturation = false;
+
+    explicit FifoScoreboard(uvm_component_name name) : uvm_scoreboard(name) {
+        transfers.bind(*this);
+    }
+    UVM_COMPONENT_UTILS(FifoScoreboard);
+
+    void build_phase(uvm_phase&) override {
+        coverage = FifoCoverage::type_id::create("coverage", this);
+    }
+
+    void connect_phase(uvm_phase&) override {
+        coverage_events.connect(coverage->analysis_export);
+    }
+
+    void write(const FifoEvent& event) override {
+        coverage_events.write(event);
+        if (event.kind == FifoEventKind::status) {
+            if (event.empty && event.full) {
+                UVM_ERROR("FIFO_STATUS", "o_empty and o_full are both asserted");
+            }
+            return;
+        }
+        if (event.kind == FifoEventKind::drain_complete) {
+            if (!expected.empty() || !event.empty || event.full) {
+                UVM_ERROR("FIFO_STATUS", "After drain, expected no pending words, o_empty=1 and o_full=0");
+            }
+            return;
+        }
+        if (event.kind == FifoEventKind::input_blocked) {
+            if (expected.size() != kCapacity) {
+                UVM_ERROR("FIFO_FULL", "Input blocked with " + std::to_string(expected.size()) +
+                          " outstanding words, expected " + std::to_string(kCapacity));
+            }
+            if (event.empty || !event.full) {
+                UVM_ERROR("FIFO_STATUS", "At saturation, expected o_empty=0 and o_full=1");
+            }
+            ++blocked;
+            pending = event.data;
+            outputs_at_block = outputs;
+            return;
+        }
+        if (event.kind == FifoEventKind::input) {
+            if (blocked != resumed) {
+                if (outputs == outputs_at_block || event.data != pending) {
+                    UVM_ERROR("FIFO_RESUME", "Expected the blocked word to be accepted after an output");
+                } else {
+                    ++resumed;
+                }
+            }
+            expected.push_back(event.data);
+            ++inputs;
+            if (expected.size() > kCapacity) {
+                UVM_ERROR("FIFO_OVERFLOW", "Accepted more than " + std::to_string(kCapacity) +
+                          " outstanding words");
+            }
+            return;
+        }
+
+        ++outputs;
+        if (expected.empty()) {
+            UVM_ERROR("UNEXPECTED_OUTPUT", "Received data with no pending input");
+            return;
+        }
+        if (event.data != expected.front()) {
+            UVM_ERROR("FIFO_ORDER", "Output #" + std::to_string(outputs) +
+                      " expected " + std::to_string(expected.front().to_uint()) +
+                      ", got " + std::to_string(event.data.to_uint()));
+        }
+        expected.pop_front();
+    }
+
+    void check_phase(uvm_phase&) override {
+        const std::string counts = "Expected " + std::to_string(expected_count) +
+            " transfers each way, observed " + std::to_string(inputs) +
+            " inputs and " + std::to_string(outputs) + " outputs";
+        if (inputs != expected_count || outputs != expected_count || !expected.empty()) {
+            UVM_ERROR("FIFO_COUNT", counts + ", pending " + std::to_string(expected.size()));
+        } else {
+            UVM_INFO("FIFO_COUNT", counts, UVM_LOW);
+        }
+        if (expect_saturation) {
+            if (blocked != 1 || resumed != 1) {
+                UVM_ERROR("FIFO_FULL", "Expected one saturation and recovery, observed " +
+                          std::to_string(blocked) + " blocked and " + std::to_string(resumed) + " resumed");
+            } else {
+                UVM_INFO("FIFO_FULL", "Input blocked at " + std::to_string(kCapacity) +
+                         " outstanding words for " + kQuietWindow.to_string() +
+                         " and was accepted after an output", UVM_LOW);
+            }
+        }
+    }
+
+private:
+    FifoCoverage* coverage = nullptr;
+    uvm_analysis_port<FifoEvent> coverage_events{"coverage_events"};
+
+    std::deque<Data> expected;
+    unsigned inputs = 0;
+    unsigned outputs = 0;
+    unsigned blocked = 0;
+    unsigned resumed = 0;
+    unsigned outputs_at_block = 0;
+    Data pending = 0;
+};
+
 class FifoVirtualSequencer : public uvm_sequencer<> {
 public:
     explicit FifoVirtualSequencer(uvm_component_name name) : uvm_sequencer(name) {}
@@ -543,7 +555,6 @@ public:
         virtual_sequencer = FifoVirtualSequencer::type_id::create("virtual_sequencer", this);
         monitor = FifoMonitor::type_id::create("monitor", this);
         scoreboard = FifoScoreboard::type_id::create("scoreboard", this);
-        coverage = FifoCoverage::type_id::create("coverage", this);
     }
 
     void connect_phase(uvm_phase&) override {
@@ -552,7 +563,6 @@ public:
         input_driver->seq_item_port.connect(input_sequencer->seq_item_export);
         output_driver->seq_item_port.connect(output_sequencer->seq_item_export);
         monitor->transfers.connect(scoreboard->transfers);
-        monitor->transfers.connect(coverage->analysis_export);
     }
 
 private:
@@ -561,7 +571,6 @@ private:
     FifoDriver* input_driver = nullptr;
     FifoDriver* output_driver = nullptr;
     FifoMonitor* monitor = nullptr;
-    FifoCoverage* coverage = nullptr;
 };
 
 class FifoSequence : public uvm_sequence<FifoRequest, FifoResponse> {
@@ -849,7 +858,7 @@ int sc_main(int argc, char** argv) {
         top.vif.trace(waveform.get());
     }
     if (argc > 3)
-        uvm_config_db<std::string>::set(nullptr, "*.env.coverage", "ucis_path", argv[3]);
+        uvm_config_db<std::string>::set(nullptr, "*.env.scoreboard.coverage", "ucis_path", argv[3]);
     InterfaceConfig::set(nullptr, "*.env.*", "vif", &top.vif);
     uvm_root::get()->set_timeout(sc_time(100, SC_US));
     run_test(argc > 1 ? argv[1] : "FifoOrderTest");
